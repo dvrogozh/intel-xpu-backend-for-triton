@@ -83,6 +83,55 @@ def _find_compiler(language: str) -> str:
         "Failed to find C++ compiler. Please specify via CXX environment variable or set triton.knobs.build.impl.")
 
 
+@functools.lru_cache()
+def _check_cxx_option(cxx: str, option: str) -> bool:
+    """
+    Checks if a compiler supports a given command-line option.
+
+    :param compiler: Name or path of the compiler (e.g., 'gcc', 'clang', 'g++').
+    :param option: The flag to test (e.g., '-std=c++20', '-Werror').
+    :return: True if supported without errors, False otherwise.
+    """
+    source = "int main() { return 0; }"
+    with tempfile.NamedTemporaryFile(mode='w', suffix=".cpp", delete=False) as tmp:
+        tmp.write(source)
+        tmp_name = tmp.name
+    output_name = tmp_name + ".out"
+    cmd = [cxx, option, "-c", tmp_name, "-o", output_name]
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        return result.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        # Compiler not found or execution timed out
+        return False
+    finally:
+        for path in (tmp_name, output_name):
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+
+@functools.lru_cache()
+def _is_sycl_compiler(cxx: str) -> bool:
+    return _check_cxx_option(cxx, "-fsycl")
+
+
+@functools.lru_cache()
+def _find_xpu_compiler() -> str:
+    icpx = shutil.which("icpx")
+    cxx = shutil.which(os.environ.get("CXX", "shutil-dummy-value"))
+    if cxx is None:
+        clangpp = shutil.which("clang++")
+        gxx = shutil.which("g++")
+        cl = shutil.which("cl")
+        cxx = icpx or cl if os.name == "nt" else icpx or clangpp or gxx
+        if cxx is None:
+            raise RuntimeError("Failed to find C++ compiler. Please specify via CXX environment variable.")
+    return cxx
+
+
 def _language_from_filename(source_name: str) -> str:
     ext = Path(source_name).suffix
     if ext == ".c":
@@ -110,18 +159,9 @@ def _build(name: str, src: str, srcdir: str, library_dirs: list[str], include_di
     include_dirs = include_dirs + [srcdir, py_include_dir, *custom_backend_dirs]
 
     if is_xpu():
-        icpx = shutil.which("icpx")
-        cxx = shutil.which(os.environ.get("CXX", "shutil-dummy-value"))
-        if cxx is None:
-            clangpp = shutil.which("clang++")
-            gxx = shutil.which("g++")
-            cl = shutil.which("cl")
-            cxx = icpx or cl if os.name == "nt" else icpx or clangpp or gxx
-            if cxx is None:
-                raise RuntimeError("Failed to find C++ compiler. Please specify via CXX environment variable.")
-        cc = cxx
+        cc = _find_xpu_compiler()
 
-        if cxx is icpx:
+        if _is_sycl_compiler(cc):
             ccflags += ["-fsycl", "-fno-sycl-id-queries-fit-in-int"]
         else:
             if os.name != "nt":

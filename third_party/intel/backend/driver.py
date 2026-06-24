@@ -12,7 +12,7 @@ from functools import cached_property, lru_cache
 
 from triton import knobs
 import triton
-from triton.runtime.build import _build, platform_key, _load_module_from_path
+from triton.runtime.build import _build, platform_key, _load_module_from_path, _find_xpu_compiler, _is_sycl_compiler
 from triton.runtime.cache import get_cache_manager
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import DriverBase, decompose_descriptor
@@ -43,6 +43,11 @@ def find_sycl(include_dir: list[str]) -> tuple[list[str], list[str]]:
     Raises:
       AssertionError: if library was not found.
     """
+    # No need to query and pass header and library directories to the
+    # SYCL capable compiler as it has them inside.
+    if _is_sycl_compiler(_find_xpu_compiler()):
+        return include_dir, []
+
     include_dir = include_dir.copy()
     assertion_message = ("sycl headers not found, please install `icpx` compiler, "
                          "or provide `ONEAPI_ROOT` environment "
